@@ -13,12 +13,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Shapes;
 using System.Windows.Media;
+using System.IO;
+using System.Xml.Serialization;
 
 namespace lab6
 {
-    /// <summary>
-    /// Logika interakcji dla klasy App.xaml
-    /// </summary>
     public partial class App : Application
     {
         private static Window thisWindow;
@@ -26,9 +25,44 @@ namespace lab6
         public static void InitializeApp(Window win) => thisWindow = win; // po co?
     }
 
+    // A helper for passing the Point data through UDP. Not mine.
+    public static class SerializeHelper
+    {
+        public static string XmlSerializeToString(this object objectInstance)
+        {
+            var serializer = new XmlSerializer(objectInstance.GetType());
+            var sb = new StringBuilder();
+
+            using (TextWriter writer = new StringWriter(sb))
+            {
+                serializer.Serialize(writer, objectInstance);
+            }
+
+            return sb.ToString();
+        }
+
+        public static T XmlDeserializeFromString<T>(this string objectData)
+        {
+            return (T)XmlDeserializeFromString(objectData, typeof(T));
+        }
+
+        public static object XmlDeserializeFromString(this string objectData, Type type)
+        {
+            var serializer = new XmlSerializer(type);
+            object result;
+
+            using (TextReader reader = new StringReader(objectData))
+            {
+                result = serializer.Deserialize(reader);
+            }
+
+            return result;
+        }
+    }
+
     public class Server
     {
-        private readonly List<int> clientIDs = new List<int>();
+        // private readonly List<int> clientIDs = new List<int>();
         private readonly ConcurrentDictionary<int, IPEndPoint> clientListeners = new ConcurrentDictionary<int, IPEndPoint>();
         private readonly ConcurrentQueue<Point> drawingQueue = new ConcurrentQueue<Point>();
         private Canvas canvas;
@@ -76,48 +110,67 @@ namespace lab6
         {
             while (isRunning || globalUDPListener.Available != 0) // handle clients until the server is stopped, and prevent any client from leaving their crap in the buffer
             {
-                if (globalUDPListener.Available == 0) // this is here to prevent blocking (until a client gets processed) when we want to stop the server
-                {
-                    Thread.Sleep(10);
-                    continue;
-                }
+                // this is here to prevent blocking (until a client gets processed) when we want to stop the server
+                if (globalUDPListener.Available == 0) continue;
                 Console.WriteLine("Handling client...");
 
                 IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, groupEP.Port);
                 byte[] data = globalUDPListener.Receive(ref remoteEP);
-                Console.WriteLine($"Server got a connection!\n\tClient: {remoteEP.ToString()}");
-                switch (Encoding.ASCII.GetString(data))
+                string message = Encoding.ASCII.GetString(data);
+                Console.WriteLine($"Server got data from client: {remoteEP.ToString()}");
+                switch (message)
                 {
-                    case "connect": // respond with personalized listening port #
-                        clientListeners.TryAdd(remoteEP.Port, remoteEP);
+                    case "connect": // respond with their listening port #
+                        AddClient(remoteEP);
                         byte[] buf = BitConverter.GetBytes(remoteEP.Port);
                         globalUDPListener.Send(buf, buf.Length, remoteEP);
                         break;
 
-                    case "disconnect": // remove client from list
-                        // todo
+                    case "disconnect": // remove client from dict
+                        clientListeners.TryRemove(remoteEP.Port, out remoteEP);
                         break;
 
                     default:
                         if (clientListeners.ContainsKey(remoteEP.Port))
                         {
                             // an already connected client sent us some data...
-
+                            Point point = SerializeHelper.XmlDeserializeFromString<Point>(message);
+                            drawingQueue.Enqueue(point);
                         }
-                        // if that client isn't in our dictionary, we ignore it
+                        else // if that client isn't in our dictionary, we ignore it
+                            Console.WriteLine($"Server: Something sent me weird data:\n\t{message}");
                         break;
                 }
-                //Console.WriteLine(Encoding.ASCII.GetString(data));
                 // todo
             }
+        }
+
+        private bool AddClient(IPEndPoint client)
+        {
+            return clientListeners.TryAdd(client.Port, client);
+        }
+
+        private bool RemoveClient(IPEndPoint client)
+        {
+            return clientListeners.TryRemove(client.Port, out client);
         }
 
         private void DrawReceivedPoints()
         {
             while (isRunning || !drawingQueue.IsEmpty)
             {
-                
-                //canvas.Children.Add();
+                if (drawingQueue.TryDequeue(out Point point)) BroadcastMessage(point);
+            }
+        }
+
+        private void BroadcastMessage(Point point)
+        {
+            string message = point.XmlSerializeToString();
+            byte[] buf = Encoding.ASCII.GetBytes(message);
+
+            foreach (IPEndPoint client in clientListeners.Values)
+            {
+                globalUDPListener.Send(buf, buf.Length, client);
             }
         }
 
@@ -130,35 +183,21 @@ namespace lab6
             handler.Dispose();
             drawer.Dispose();
 
-            // todo: send info to all connected clients that the bar is now closed and they need to find an another place to drink
+            // send info to all connected clients that the bar is now closed and they need to find an another place to drink
+            string message = "We're closing, find another place to drink.";
+            byte[] buf = Encoding.ASCII.GetBytes(message);
+            Console.WriteLine("Server alerting clients...");
+            foreach (IPEndPoint client in clientListeners.Values)
+            {
+                globalUDPListener.Send(buf, buf.Length, client);
+                Console.WriteLine($"\tClient {client.ToString()} alerted.");
+            }
 
             globalUDPListener.Close();
+            clientListeners.Clear();
 
             Console.WriteLine("Server stopped.");
             return 0;
-        }
-
-        private int FindFreeUDPPort()
-        {
-            var startingAtPort = 5000;
-            var maxNumberOfPortsToCheck = 500;
-            var range = Enumerable.Range(startingAtPort, maxNumberOfPortsToCheck);
-            var portsInUse =
-                from p in range
-                join used in System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
-            on p equals used.Port
-                select p;
-
-            var FirstFreeUDPPortInRange = range.Except(portsInUse).FirstOrDefault();
-
-            if (FirstFreeUDPPortInRange > 0)
-            {
-                return FirstFreeUDPPortInRange;
-            }
-            else
-            {
-                return -1;
-            }
         }
     }
 
@@ -166,13 +205,16 @@ namespace lab6
     {
         private UdpClient client = new UdpClient();
         private IPEndPoint outgoingEndpoint;
+        private bool connected = false;
+        Task receiver;
+        Canvas canvas;
 
         public Client()
         {
 
         }
 
-        public int Connect(string hostname, int port)
+        public int Connect(string hostname, int port, Canvas c)
         {
             if (hostname == "localhost") hostname = "127.0.0.1";
 
@@ -183,15 +225,18 @@ namespace lab6
             catch (Exception e)
             {
                 Console.WriteLine($"Client failed to connect! Hostname: {hostname}");
-                Console.WriteLine(e.ToString());
+                Console.WriteLine(e.Message);
                 return 1;
             }
-            
-            
+
+            canvas = c;
+            //receiver = Task.Factory.StartNew(() => IncomingPointsHandler());
+
             byte[] buf = Encoding.ASCII.GetBytes("connect");
             client.Send(buf, buf.Length, outgoingEndpoint);
 
-            Console.WriteLine($"Client connected. Endpoint: {outgoingEndpoint.ToString()}");
+            connected = true;
+            Console.WriteLine($"Client connected. UDPC: {client.Client.LocalEndPoint} Endpoint: {outgoingEndpoint.ToString()}");
             return 0;
         }
 
@@ -199,24 +244,49 @@ namespace lab6
         {
             byte[] buf = Encoding.ASCII.GetBytes("disconnect");
             client.Send(buf, buf.Length, outgoingEndpoint);
-            outgoingEndpoint = null;
+            connected = false;
 
             Console.WriteLine($"Client disconnecting. Endpoint: {outgoingEndpoint.ToString()}");
+            outgoingEndpoint = null;
         }
 
-        public void StartSending(Point start)
+        public void StartSending(Point point)
         {
-
+            if (outgoingEndpoint == null) return;
+            string message = point.XmlSerializeToString();
+            byte[] data = Encoding.ASCII.GetBytes(message);
+            client.Send(data, data.Length, outgoingEndpoint);
         }
 
         public void ContinueSending(Point point)
         {
-
+            if (outgoingEndpoint == null) return;
+            string message = point.XmlSerializeToString();
+            byte[] data = Encoding.ASCII.GetBytes(message);
+            client.Send(data, data.Length, outgoingEndpoint);
         }
 
         public void StopSending()
         {
 
         }
+
+        //public List<Point> IncomingPointsHandler()
+        //{
+        //    if (!connected) return null;
+        //    //while (client.Available == 0) { } // waiting...
+        //    List<Point> ret = new List<Point>();
+        //    while (client.Available != 0)
+        //    {
+        //        IPEndPoint remoteEP = outgoingEndpoint;
+        //        byte[] data = client.Receive(ref remoteEP);
+        //        Console.WriteLine($"remote: {remoteEP} out: {outgoingEndpoint}");
+        //        string message = Encoding.ASCII.GetString(data);
+        //        Point point = SerializeHelper.XmlDeserializeFromString<Point>(message);
+        //        ret.Add(point);
+        //        //polyline.Dispatcher.Invoke(() => polyline.Points.Add(point));
+        //    }
+        //    return ret;
+        //}
     }
 }

@@ -16,9 +16,6 @@ using System.Windows.Shapes;
 
 namespace lab6
 {
-    /// <summary>
-    /// Logika interakcji dla klasy MainWindow.xaml
-    /// </summary>
     public partial class MainWindow : Window
     {
         Color currentColor = SystemColors.WindowFrameBrush.Color;
@@ -32,12 +29,13 @@ namespace lab6
             InitializeComponent();
             App.InitializeApp(this);
             canvas.IsEnabled = false;
+            //Task.Factory.StartNew(() => CanvasUpdater());
         }
         
         // Server and Client management methods
         private void ConnectButton_Click(object sender, RoutedEventArgs e)
         {
-            if (client.Connect(ipaddr.Text, int.Parse(port.Text)) != 0) return;
+            if (client.Connect(ipaddr.Text, int.Parse(port.Text), canvas) != 0) return;
 
             canvas.IsEnabled = true;
             connectButton.IsEnabled = false;
@@ -56,8 +54,7 @@ namespace lab6
         private void HostButton_Click(object sender, RoutedEventArgs e)
         {
             if (server.Start(canvas, ipaddr.Text, int.Parse(port.Text)) != 0) return;
-
-            //connectButton.IsEnabled = false; // czy to potrzebne?
+            
             hostButton.IsEnabled = false;
             stopHostingButton.IsEnabled = true;
         }
@@ -65,8 +62,7 @@ namespace lab6
         private void StopHostingButton_Click(object sender, RoutedEventArgs e)
         {
             server.Stop();
-
-            connectButton.IsEnabled = true;
+            
             hostButton.IsEnabled = true;
             stopHostingButton.IsEnabled = false;
         }
@@ -114,5 +110,25 @@ namespace lab6
         {
             //App.StopSending();
         }
+
+        //private void CanvasUpdater()
+        //{
+        //    while (true)
+        //    {
+        //        List<Point> newPoints = client.IncomingPointsHandler();
+        //        if (newPoints == null) continue;
+        //        currentPolyline = new Polyline
+        //        {
+        //            Stroke = new SolidColorBrush(currentColor),
+        //            StrokeThickness = lineWidthSlider.Value,
+        //            FillRule = FillRule.EvenOdd
+        //        };
+        //        foreach (Point point in newPoints)
+        //        {
+        //            currentPolyline.Dispatcher.Invoke(() => currentPolyline.Points.Add(point));
+        //        }
+        //        canvas.Dispatcher.Invoke(() => canvas.Children.Add(currentPolyline) );
+        //    }
+        //}
     }
 }
