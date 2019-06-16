@@ -120,7 +120,7 @@ namespace lab6
                 Console.WriteLine($"Server got data from client: {remoteEP.ToString()}");
                 switch (message)
                 {
-                    case "connect": // respond with their listening port #
+                    case "connect": // respond with the port # server is listening on for this client
                         AddClient(remoteEP);
                         byte[] buf = BitConverter.GetBytes(remoteEP.Port);
                         globalUDPListener.Send(buf, buf.Length, remoteEP);
@@ -169,6 +169,9 @@ namespace lab6
 
             foreach (IPEndPoint client in clientListeners.Values)
             {
+                string id = client.Port.XmlSerializeToString();
+                byte[] idbuf = Encoding.ASCII.GetBytes(id);
+                globalUDPListener.Send(idbuf, idbuf.Length, client);
                 globalUDPListener.Send(buf, buf.Length, client);
             }
         }
