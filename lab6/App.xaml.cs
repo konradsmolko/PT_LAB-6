@@ -29,10 +29,11 @@ namespace lab6
     public class Server
     {
         private readonly List<int> clientIDs = new List<int>();
+        private readonly ConcurrentDictionary<int, IPEndPoint> clientListeners = new ConcurrentDictionary<int, IPEndPoint>();
         private readonly ConcurrentQueue<Point> drawingQueue = new ConcurrentQueue<Point>();
         private Canvas canvas;
         private bool isRunning = false;
-        UdpClient listener;
+        UdpClient globalUDPListener;
         IPEndPoint groupEP;
         Task handler, drawer;
 
@@ -53,7 +54,7 @@ namespace lab6
                 else
                     groupEP = new IPEndPoint(IPAddress.Parse(hostname), port);
                 
-                listener = new UdpClient(port);
+                globalUDPListener = new UdpClient(port);
             }
             catch (Exception e)
             {
@@ -73,21 +74,40 @@ namespace lab6
 
         private void HandleClients()
         {
-            while (isRunning || listener.Available != 0) // handle clients until the server is stopped, and prevent any client from leaving their crap in the buffer
+            while (isRunning || globalUDPListener.Available != 0) // handle clients until the server is stopped, and prevent any client from leaving their crap in the buffer
             {
-                if (listener.Available == 0) continue; // this is here to prevent blocking (until a client gets processed) when we want to stop the server
+                if (globalUDPListener.Available == 0) // this is here to prevent blocking (until a client gets processed) when we want to stop the server
+                {
+                    Thread.Sleep(10);
+                    continue;
+                }
                 Console.WriteLine("Handling client...");
-                byte[] data = listener.Receive(ref groupEP);
+
+                IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, groupEP.Port);
+                byte[] data = globalUDPListener.Receive(ref remoteEP);
+                Console.WriteLine($"Server got a connection!\n\tClient: {remoteEP.ToString()}");
                 switch (Encoding.ASCII.GetString(data))
                 {
                     case "connect": // respond with personalized listening port #
+                        clientListeners.TryAdd(remoteEP.Port, remoteEP);
+                        byte[] buf = BitConverter.GetBytes(remoteEP.Port);
+                        globalUDPListener.Send(buf, buf.Length, remoteEP);
                         break;
+
                     case "disconnect": // remove client from list
+                        // todo
                         break;
-                    default: // handle point collection
+
+                    default:
+                        if (clientListeners.ContainsKey(remoteEP.Port))
+                        {
+                            // an already connected client sent us some data...
+
+                        }
+                        // if that client isn't in our dictionary, we ignore it
                         break;
                 }
-                // Console.WriteLine(Encoding.ASCII.GetString(data));
+                //Console.WriteLine(Encoding.ASCII.GetString(data));
                 // todo
             }
         }
@@ -109,18 +129,43 @@ namespace lab6
             drawer.Wait();
             handler.Dispose();
             drawer.Dispose();
-            listener.Close();
+
+            // todo: send info to all connected clients that the bar is now closed and they need to find an another place to drink
+
+            globalUDPListener.Close();
 
             Console.WriteLine("Server stopped.");
             return 0;
+        }
+
+        private int FindFreeUDPPort()
+        {
+            var startingAtPort = 5000;
+            var maxNumberOfPortsToCheck = 500;
+            var range = Enumerable.Range(startingAtPort, maxNumberOfPortsToCheck);
+            var portsInUse =
+                from p in range
+                join used in System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
+            on p equals used.Port
+                select p;
+
+            var FirstFreeUDPPortInRange = range.Except(portsInUse).FirstOrDefault();
+
+            if (FirstFreeUDPPortInRange > 0)
+            {
+                return FirstFreeUDPPortInRange;
+            }
+            else
+            {
+                return -1;
+            }
         }
     }
 
     public class Client
     {
-        private Guid guid = Guid.NewGuid(); // used for absolute unique client identification
         private UdpClient client = new UdpClient();
-        IPEndPoint endpoint;
+        private IPEndPoint outgoingEndpoint;
 
         public Client()
         {
@@ -133,30 +178,30 @@ namespace lab6
 
             try
             {
-                endpoint = new IPEndPoint(IPAddress.Parse(hostname), port);
+                outgoingEndpoint = new IPEndPoint(IPAddress.Parse(hostname), port);
             }
             catch (Exception e)
             {
-                Console.WriteLine($"Client failed to connect!\nGUID: {guid}\n{hostname}");
+                Console.WriteLine($"Client failed to connect! Hostname: {hostname}");
                 Console.WriteLine(e.ToString());
                 return 1;
             }
             
             
             byte[] buf = Encoding.ASCII.GetBytes("connect");
-            client.Send(buf, buf.Length, endpoint);
+            client.Send(buf, buf.Length, outgoingEndpoint);
 
-            Console.WriteLine($"Client connected.\nGUID: {guid}\nEndpoint: {endpoint.ToString()}");
+            Console.WriteLine($"Client connected. Endpoint: {outgoingEndpoint.ToString()}");
             return 0;
         }
 
         public void Disconnect()
         {
             byte[] buf = Encoding.ASCII.GetBytes("disconnect");
-            client.Send(buf, buf.Length, endpoint);
-            endpoint = null;
+            client.Send(buf, buf.Length, outgoingEndpoint);
+            outgoingEndpoint = null;
 
-            Console.WriteLine($"Client disconnecting.\nGUID: {guid}");
+            Console.WriteLine($"Client disconnecting. Endpoint: {outgoingEndpoint.ToString()}");
         }
 
         public void StartSending(Point start)
