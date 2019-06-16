@@ -141,7 +141,6 @@ namespace lab6
                             Console.WriteLine($"Server: Something sent me weird data:\n\t{message}");
                         break;
                 }
-                // todo
             }
         }
 
@@ -191,6 +190,8 @@ namespace lab6
             {
                 globalUDPListener.Send(buf, buf.Length, client);
                 Console.WriteLine($"\tClient {client.ToString()} alerted.");
+                // currently not handled by anyone... damned deaf clients
+                // they're supposed to disconnect themselves, just without sending the "disconnect" message
             }
 
             globalUDPListener.Close();
@@ -206,7 +207,7 @@ namespace lab6
         private UdpClient client = new UdpClient();
         private IPEndPoint outgoingEndpoint;
         private bool connected = false;
-        Task receiver;
+        //Task receiver;
         Canvas canvas;
 
         public Client()
